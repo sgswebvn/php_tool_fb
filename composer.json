@@ -1,0 +1,16 @@
+{
+    "name": "myapp/mvc",
+    "description": "Mini MVC framework with PHP and Composer",
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
+    },
+    "require": {
+        "php": ">=8.0",
+        "vlucas/phpdotenv": "5",
+        "firebase/php-jwt": "6",
+        "facebook/graph-sdk": "5",
+        "guzzlehttp/guzzle": "^7.9"
+    }
+}
