@@ -36,3 +36,5 @@ $router->get('/admin/users', ['AdminController', 'users']);
 $router->post('/admin/users/block/{id}', ['AdminController', 'blockUser']);
 $router->get('/admin/plans', ['AdminController', 'plans']);
 $router->post('/admin/plans/update', ['AdminController', 'updatePlan']);
+
+$router->get('/home/test', ['Test', 'index']);
