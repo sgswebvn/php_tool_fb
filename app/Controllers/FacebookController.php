@@ -12,108 +12,66 @@ use App\Models\Comment;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\AuditLog;
+use Facebook\Facebook;
 
 class FacebookController extends Controller
 {
-    private function curlRequest($url, $method = 'GET', $params = [], $accessToken = null)
+    private $fb;
+
+    public function __construct()
     {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-
-        if ($accessToken) {
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $accessToken]);
-        }
-
-        if (!empty($params) && $method === 'POST') {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
-        }
-
-        $response = curl_exec($ch);
-        $error = curl_error($ch);
-        curl_close($ch);
-
-        if ($error) {
-            error_log("cURL Error: " . $error);
-            return false;
-        }
-        return json_decode($response, true);
+        $this->fb = new Facebook([
+            'app_id' => env('FB_APP_ID'),
+            'app_secret' => env('FB_APP_SECRET'),
+            'default_graph_version' => 'v23.0',
+        ]);
     }
 
     public function redirectToFacebook()
     {
-        $state = bin2hex(random_bytes(16)); // Tạo state ngẫu nhiên
-        Session::set('fb_state', $state);   // Lưu state vào session
-        $params = [
-            'client_id' => env('FB_APP_ID'),
-            'redirect_uri' => $this->url('/facebook/callback'),
-            'scope' => 'email,pages_show_list,pages_manage_posts,pages_messaging,pages_read_engagement,read_insights',
-            'response_type' => 'code',
-            'state' => $state
-        ];
-        $loginUrl = 'https://www.facebook.com/v23.0/dialog/oauth?' . http_build_query($params);
+        $helper = $this->fb->getRedirectLoginHelper();
+        $permissions = ['email', 'pages_show_list', 'pages_manage_posts', 'pages_messaging', 'pages_read_engagement', 'read_insights'];
+        $loginUrl = $helper->getLoginUrl($this->url('/facebook/callback'), $permissions);
         Response::redirect($loginUrl);
     }
 
     public function handleCallback()
     {
-        error_log("Callback received: " . print_r($_GET, true)); // Log query string
-        $code = $_GET['code'] ?? null;
-        $state = $_GET['state'] ?? null;
-        $sessionState = Session::get('fb_state');
-
-        if (!$code || !$state || $state !== $sessionState) {
-            error_log("Invalid code or state mismatch: code=$code, state=$state, sessionState=$sessionState");
-            Response::json(['error' => 'Invalid authentication request'], 400);
+        $helper = $this->fb->getRedirectLoginHelper();
+        try {
+            $accessToken = $helper->getAccessToken();
+        } catch (\Facebook\Exceptions\FacebookResponseException $e) {
+            set_flash('error', 'Lỗi xác thực Facebook: ' . $e->getMessage());
+            Response::redirect('/dashboard');
+            return;
+        } catch (\Facebook\Exceptions\FacebookSDKException $e) {
+            set_flash('error', 'Lỗi SDK Facebook: ' . $e->getMessage());
+            Response::redirect('/dashboard');
             return;
         }
 
-        // Lấy access token
-        $tokenUrl = 'https://graph.facebook.com/v23.0/oauth/access_token';
-        $tokenParams = [
-            'client_id' => env('FB_APP_ID'),
-            'client_secret' => env('FB_APP_SECRET'),
-            'redirect_uri' => $this->url('/facebook/callback'),
-            'code' => $code
-        ];
-        $tokenResponse = $this->curlRequest($tokenUrl, 'GET', $tokenParams);
-        error_log("Token response: " . print_r($tokenResponse, true));
-
-        if (!$tokenResponse || isset($tokenResponse['error'])) {
-            error_log("Token error: " . ($tokenResponse['error']['message'] ?? 'No token received'));
-            Response::json(['error' => 'Failed to get access token'], 400);
+        if (!$accessToken) {
+            set_flash('error', 'Không thể lấy token truy cập.');
+            Response::redirect('/dashboard');
             return;
         }
 
-        $accessToken = $tokenResponse['access_token'];
+        $oAuth2Client = $this->fb->getOAuth2Client();
+        $longLivedToken = $oAuth2Client->getLongLivedAccessToken($accessToken);
         $userId = Session::get('user_id');
-
-        // Lấy thông tin user
-        $meResponse = $this->curlRequest("https://graph.facebook.com/v23.0/me", 'GET', [], $accessToken);
-        if (!$meResponse || isset($meResponse['error'])) {
-            error_log("Me error: " . ($meResponse['error']['message'] ?? 'No user data'));
-            Response::json(['error' => 'Failed to get user info'], 400);
-            return;
-        }
-        $fbUserId = $meResponse['id'];
+        $response = $this->fb->get('/me', $longLivedToken->getValue());
+        $fbUserId = $response->getGraphUser()['id'];
 
         UserSocialAccount::create([
             'user_id' => $userId,
             'provider' => 'facebook',
             'fb_user_id' => $fbUserId,
-            'access_token' => $accessToken,
-            'token_expires' => date('Y-m-d H:i:s', time() + $tokenResponse['expires_in'])
+            'access_token' => $longLivedToken->getValue(),
+            'token_expires' => $longLivedToken->getExpiresAt()
         ]);
 
-        // Lấy danh sách fanpage
-        $pagesResponse = $this->curlRequest("https://graph.facebook.com/v23.0/me/accounts", 'GET', [], $accessToken);
-        if (!$pagesResponse || isset($pagesResponse['error'])) {
-            error_log("Pages error: " . ($pagesResponse['error']['message'] ?? 'No pages data'));
-            Response::json(['error' => 'Failed to get pages'], 400);
-            return;
-        }
-        $pages = $pagesResponse['data'] ?? [];
+        $pageResponse = $this->fb->get('/me/accounts', $longLivedToken->getValue());
+        $pages = $pageResponse->getGraphEdge()->asArray();
         foreach ($pages as $pageData) {
             $pageId = Page::create([
                 'user_id' => $userId,
@@ -123,9 +81,8 @@ class FacebookController extends Controller
                 'access_token' => $pageData['access_token']
             ]);
 
-            // Lấy posts và comments
-            $postsResponse = $this->curlRequest("https://graph.facebook.com/v23.0/{$pageData['id']}/posts", 'GET', [], $pageData['access_token']);
-            $posts = $postsResponse['data'] ?? [];
+            $postResponse = $this->fb->get("/{$pageData['id']}/posts", $pageData['access_token']);
+            $posts = $postResponse->getGraphEdge()->asArray();
             foreach ($posts as $postData) {
                 $postId = Post::create([
                     'page_id' => $pageId,
@@ -134,8 +91,8 @@ class FacebookController extends Controller
                     'created_time' => date('Y-m-d H:i:s', strtotime($postData['created_time'])),
                     'status' => 'published'
                 ]);
-                $commentsResponse = $this->curlRequest("https://graph.facebook.com/v23.0/{$postData['id']}/comments", 'GET', [], $pageData['access_token']);
-                $comments = $commentsResponse['data'] ?? [];
+                $commentResponse = $this->fb->get("/{$postData['id']}/comments", $pageData['access_token']);
+                $comments = $commentResponse->getGraphEdge()->asArray();
                 foreach ($comments as $commentData) {
                     Comment::create([
                         'post_id' => $postId,
@@ -149,9 +106,8 @@ class FacebookController extends Controller
                 }
             }
 
-            // Lấy conversations và messages
-            $convResponse = $this->curlRequest("https://graph.facebook.com/v23.0/{$pageData['id']}/conversations", 'GET', [], $pageData['access_token']);
-            $conversations = $convResponse['data'] ?? [];
+            $convResponse = $this->fb->get("/{$pageData['id']}/conversations", $pageData['access_token']);
+            $conversations = $convResponse->getGraphEdge()->asArray();
             foreach ($conversations as $convData) {
                 $convId = Conversation::create([
                     'page_id' => $pageId,
@@ -159,8 +115,8 @@ class FacebookController extends Controller
                     'customer_psid' => $convData['participants']['data'][0]['id'],
                     'last_message_time' => date('Y-m-d H:i:s', strtotime($convData['updated_time']))
                 ]);
-                $msgResponse = $this->curlRequest("https://graph.facebook.com/v23.0/{$convData['id']}/messages", 'GET', [], $pageData['access_token']);
-                $messages = $msgResponse['data'] ?? [];
+                $msgResponse = $this->fb->get("/{$convData['id']}/messages", $pageData['access_token']);
+                $messages = $msgResponse->getGraphEdge()->asArray();
                 foreach ($messages as $msgData) {
                     Message::create([
                         'conversation_id' => $convId,
@@ -176,6 +132,7 @@ class FacebookController extends Controller
         }
 
         AuditLog::log(['action' => 'fb_connect_success', 'user_id' => $userId]);
-        Response::redirect('/dashboard');
+        set_flash('success', 'Kết nối Facebook thành công.');
+        Response::redirect('/fanpages');
     }
 }

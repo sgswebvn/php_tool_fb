@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Core\Controller;
+use App\Core\Response;
 use App\Core\Session;
 use App\Models\Plan;
 use App\Models\User;
@@ -46,13 +47,21 @@ class AdminController extends Controller
             'max_pages' => (int)$_POST['max_pages'],
             'price' => (float)$_POST['price']
         ];
-        Plan::update($id, $data);
-        $this->redirect('/admin/plans');
+        if (Plan::update($id, $data)) {
+            set_flash('success', 'Cập nhật gói thành công.');
+        } else {
+            set_flash('error', 'Cập nhật gói thất bại.');
+        }
+        Response::redirect('/admin/plans');
     }
 
     public function blockUser($id)
     {
-        User::update($id, ['status' => 'blocked']);
-        $this->redirect('/admin/users');
+        if (User::update($id, ['status' => 'blocked'])) {
+            set_flash('success', 'Khóa người dùng thành công.');
+        } else {
+            set_flash('error', 'Khóa người dùng thất bại.');
+        }
+        Response::redirect('/admin/users');
     }
 }

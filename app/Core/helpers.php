@@ -27,3 +27,16 @@ function validate_csrf_token($token)
     Session::start();
     return hash_equals(Session::get('csrf_token'), $token);
 }
+function set_flash($key, $message)
+{
+    Session::start();
+    $_SESSION['flash'][$key] = $message;
+}
+
+function get_flash($key)
+{
+    Session::start();
+    $message = $_SESSION['flash'][$key] ?? null;
+    unset($_SESSION['flash'][$key]);
+    return $message;
+}

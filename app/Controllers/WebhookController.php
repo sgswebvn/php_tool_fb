@@ -4,6 +4,7 @@ namespace App\Controllers;
 
 use App\Core\Controller;
 use App\Core\Response;
+use App\Core\Session;
 use App\Models\WebhookEvent;
 use App\Models\Page;
 use App\Models\Post;
@@ -16,12 +17,22 @@ class WebhookController extends Controller
 {
     public function handle()
     {
-        if ($_GET['hub_mode'] === 'subscribe' && $_GET['hub_verify_token'] === env('FB_WEBHOOK_TOKEN')) {
-            echo $_GET['hub_challenge'];
+        $mode = $_GET['hub_mode'] ?? null;
+        $token = $_GET['hub_verify_token'] ?? null;
+        $challenge = $_GET['hub_challenge'] ?? null;
+
+        if ($mode === 'subscribe' && $token === env('FB_WEBHOOK_TOKEN')) {
+            echo $challenge;
             exit;
         }
+
         $payload = json_decode(file_get_contents('php://input'), true);
-        $eventId = WebhookEvent::create(['event_type' => $payload['object'] ?? 'unknown', 'payload' => json_encode($payload)]);
+        $eventId = WebhookEvent::create([
+            'page_id' => $payload['entry'][0]['id'] ?? null,
+            'event_type' => $payload['object'] ?? 'unknown',
+            'payload' => json_encode($payload),
+            'processed' => 0
+        ]);
 
         if (isset($payload['entry'])) {
             foreach ($payload['entry'] as $entry) {
@@ -32,12 +43,14 @@ class WebhookController extends Controller
                     foreach ($entry['changes'] as $change) {
                         if ($change['field'] === 'feed') {
                             $postData = $change['value'];
-                            $postId = Post::firstWhere('fb_post_id', $postData['post_id']);
-                            if ($postId) {
+                            $post = Post::firstWhere('fb_post_id', $postData['post_id']);
+                            if ($post) {
                                 Comment::create([
-                                    'post_id' => $postId['id'],
+                                    'post_id' => $post['id'],
                                     'fb_comment_id' => $postData['comment_id'],
-                                    'sender_id' => $postData['from']['id'],
+                                    'parent_comment_id' => $postData['parent_comment_id'] ?? null,
+                                    'from_id' => $postData['from']['id'],
+                                    'from_name' => $postData['from']['name'] ?? '',
                                     'message' => $postData['message'] ?? '',
                                     'created_time' => date('Y-m-d H:i:s', strtotime($postData['created_time']))
                                 ]);
@@ -59,7 +72,8 @@ class WebhookController extends Controller
                             'sender_id' => $msg['sender']['id'],
                             'recipient_id' => $msg['recipient']['id'],
                             'message' => $msg['message']['text'] ?? '',
-                            'created_time' => date('Y-m-d H:i:s', strtotime($msg['timestamp'] / 1000)),
+                            'attachments' => json_encode($msg['message']['attachments'] ?? []),
+                            'created_time' => date('Y-m-d H:i:s', $msg['timestamp'] / 1000),
                             'direction' => 'in'
                         ]);
                     }
@@ -67,8 +81,8 @@ class WebhookController extends Controller
             }
         }
 
-        WebhookEvent::markProcessed($eventId);
+        WebhookEvent::update($eventId, ['processed' => 1]);
         AuditLog::log(['action' => 'webhook_processed', 'event_id' => $eventId]);
-        Response::json(['success' => true], 200);
+        Response::redirect('/fanpages'); // Hoặc không redirect, tùy cấu hình
     }
 }
