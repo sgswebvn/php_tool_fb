@@ -41,7 +41,11 @@ class AuthController extends Controller
             return;
         }
 
-        $id = User::create(['name' => $name, 'email' => $email, 'password' => $password]);
+        $id = User::create([
+            'name' => $name,
+            'email' => $email,
+            'password' => password_hash($password, PASSWORD_DEFAULT)
+        ]);
         if ($id) {
             Subscription::create(['user_id' => $id, 'plan_id' => 1, 'status' => 'active', 'expires_at' => null]);
             AuditLog::log(['action' => 'user_register', 'user_id' => $id]);
