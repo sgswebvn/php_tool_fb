@@ -34,10 +34,6 @@ class Router
         // Middleware Auth cho các route protected
         if (!in_array($path, ['/', '/register', '/login', '/facebook/connect', '/facebook/callback'])) {
             Session::start();
-            if (!Session::get('user_id')) {
-                Response::redirect('/login');
-                return;
-            }
             if (strpos($path, '/admin') === 0) {
                 if (!\App\Models\User::isAdmin(Session::get('user_id'))) {
                     Response::redirect('/dashboard');  // Hoặc 403
